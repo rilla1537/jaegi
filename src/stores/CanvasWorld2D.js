@@ -8,6 +8,10 @@ export function useCanvasWorld2D() {
   const CanvasShapes = ref([]);
 
   const enableHandler = ref(false);
+  const DrawingShapes = computed(() => {
+    if (enableHandler.value) return CanvasShapes.value;
+    return CanvasShapes.value.filter(shape => shape.role !== 'handler');
+  });
   const handlerHitSize = ref(10);
 
   const trigger = ref(0);
@@ -132,6 +136,7 @@ export function useCanvasWorld2D() {
   return {
     VertexTrackingSheet,
     CanvasShapes,
+    DrawingShapes,
     getPosition,
     addShape,
     addHandler,
