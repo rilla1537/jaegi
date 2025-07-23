@@ -159,23 +159,26 @@ watch(world.trigger, newV => {
   drawShapes();
 });
 
+watch(world.enableHandler, () => {
+  drawShapes();
+});
+
 function drawShapes() {
   const canvas = _OriginalCanvas.value;
-  if (!canvas || !world.CanvasShapes.value) return;
+  if (!canvas || !world.DrawingShapes.value) return;
 
   const ctx = canvas.getContext("2d");
   const shapeDrawer = ShapeDrawer.from(world).using(ctx);
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  const withoutHandlerShapes = world.CanvasShapes.value.filter( (shape) => shape.role !== "handler" );
-  for (const shape of withoutHandlerShapes) { 
-    shapeDrawer.path(shape);
+  for (const shape of world.DrawingShapes.value) {
+    if (shape.role === "handler") {
+      shapeDrawer.handler(shape);
+    } else {
+      shapeDrawer.path(shape);
+    }
   }
-
-  if (!world.enableHandler) return;
-  const handlers = world.CanvasShapes.value.filter( (shape) => shape.role === "handler" );
-  handlers.forEach((handler) => shapeDrawer.handler(handler));
 }
 </script>
 
