@@ -76,7 +76,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 
 const mainCanvas = ref(null)
 const canvasContainer = ref(null)
@@ -124,8 +124,16 @@ function onFileChange(e) {
 function resizeCanvas() {
   const canvas = mainCanvas.value
   const container = canvasContainer.value
-  canvas.width = container.clientWidth
-  canvas.height = container.clientHeight
+  if (!canvas || !container) return
+  const dpr = window.devicePixelRatio || 1
+  const width = container.clientWidth
+  const height = container.clientHeight
+  canvas.width = Math.max(1, Math.floor(width * dpr))
+  canvas.height = Math.max(1, Math.floor(height * dpr))
+  canvas.style.width = width + 'px'
+  canvas.style.height = height + 'px'
+  const ctx = canvas.getContext('2d')
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 }
 
 function getPos(evt) {
@@ -145,6 +153,7 @@ function getNormal(line) {
   const dx = line.x2 - line.x1
   const dy = line.y2 - line.y1
   const len = Math.hypot(dx, dy)
+  if (!len) return { x: 0, y: -1 }
   return { x: -dy / len, y: dx / len }
 }
 
@@ -183,7 +192,7 @@ function clearLabels() {
 }
 
 function recalcMeasures() {
-  if (!baseLine.value) return
+  if (!baseLine.value || !state.basePx) return
   state.lines.forEach((l) => {
     const len = distance(l.x1, l.y1, l.x2, l.y2)
     l.cm = (baseLine.value.cm * len) / state.basePx
@@ -191,11 +200,13 @@ function recalcMeasures() {
 }
 
 function draw() {
-  const ctx = mainCanvas.value.getContext('2d')
-  ctx.clearRect(0, 0, mainCanvas.value.width, mainCanvas.value.height)
+  const canvas = mainCanvas.value
+  const ctx = canvas.getContext('2d')
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+
   if (state.image) {
-    const cw = mainCanvas.value.width
-    const ch = mainCanvas.value.height
+    const cw = canvas.width / (window.devicePixelRatio || 1)
+    const ch = canvas.height / (window.devicePixelRatio || 1)
     const scale = Math.min(cw / state.image.width, ch / state.image.height)
     const w = state.image.width * scale
     const h = state.image.height * scale
@@ -203,7 +214,9 @@ function draw() {
     const dy = (ch - h) / 2
     ctx.drawImage(state.image, dx, dy, w, h)
   }
+
   clearLabels()
+
   if (baseLine.value) {
     drawLine(ctx, baseLine.value, 'deepskyblue')
     baseLine.value.label = addLabel(baseLine.value)
@@ -212,6 +225,7 @@ function draw() {
     drawLine(ctx, l, 'tomato')
     l.label = addLabel(l)
   })
+
   updateSelectionControls()
 }
 
@@ -289,8 +303,10 @@ const pointerStrategies = {
     pointerup() {
       if (tool.value === 'base') {
         baseLine.value = { ...state.drawing }
-        baseLine.value.cm =
-          parseFloat(prompt('Enter baseline length (cm)', '10')) || 10
+        const defaultCm = '10'
+        const entered = prompt('Enter baseline length (cm)', defaultCm)
+        const val = parseFloat(entered || defaultCm)
+        baseLine.value.cm = !isNaN(val) && val > 0 ? val : parseFloat(defaultCm)
         baseLine.value.type = 'base'
         state.basePx = distance(
           baseLine.value.x1,
@@ -307,7 +323,7 @@ const pointerStrategies = {
           state.drawing.x2,
           state.drawing.y2,
         )
-        const cm = (baseLine.value.cm * len) / state.basePx
+        const cm = state.basePx ? (baseLine.value.cm * len) / state.basePx : 0
         state.lines.push({ ...state.drawing, cm, type: 'measure' })
       }
       state.drawing = null
@@ -479,7 +495,7 @@ function handlePointer(type, evt) {
 function selectLine(hit) {
   state.selected = hit
   state.startLine = { ...hit.line }
-  state.action = 'idle'
+  state.action = 'idle' // 선택 시 조작 상태 초기화
   // Redraw to ensure handles and control icons are visible for the selected line
   draw()
 }
@@ -498,6 +514,7 @@ function updateSelectionControls() {
   if (!state.selected) return
   const line = state.selected.line
   const container = canvasContainer.value
+
   handleStart = document.createElement('div')
   handleEnd = document.createElement('div')
   handleStart.className = handleEnd.className = 'line-handle'
@@ -527,7 +544,8 @@ function updateSelectionControls() {
       baseLine.value = null
       state.lines = []
     } else {
-      state.lines.splice(state.selected.index, 1)
+      const idx = state.lines.indexOf(state.selected.line)
+      if (idx !== -1) state.lines.splice(idx, 1)
     }
     state.selected = null
     clearSelectionControls()
@@ -550,6 +568,11 @@ function startManip(e, type) {
   state.startLine = { ...state.selected.line }
 }
 
+function onWindowResize() {
+  resizeCanvas()
+  draw()
+}
+
 onMounted(() => {
   const canvas = mainCanvas.value
   canvas.addEventListener('pointerdown', (e) => handlePointer('pointerdown', e))
@@ -557,8 +580,22 @@ onMounted(() => {
   canvas.addEventListener('pointercancel', (e) => handlePointer('pointercancel', e))
   window.addEventListener('pointerup', (e) => handlePointer('pointerup', e))
   window.addEventListener('pointercancel', (e) => handlePointer('pointercancel', e))
+  window.addEventListener('resize', onWindowResize)
+
   resizeCanvas()
   draw()
+})
+
+onBeforeUnmount(() => {
+  const canvas = mainCanvas.value
+  if (canvas) {
+    canvas.removeEventListener('pointerdown', (e) => handlePointer('pointerdown', e))
+    canvas.removeEventListener('pointermove', (e) => handlePointer('pointermove', e))
+    canvas.removeEventListener('pointercancel', (e) => handlePointer('pointercancel', e))
+  }
+  window.removeEventListener('pointerup', (e) => handlePointer('pointerup', e))
+  window.removeEventListener('pointercancel', (e) => handlePointer('pointercancel', e))
+  window.removeEventListener('resize', onWindowResize)
 })
 </script>
 
