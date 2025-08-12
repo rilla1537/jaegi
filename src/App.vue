@@ -107,6 +107,14 @@ function onFileChange(e) {
   const img = new Image()
   img.onload = () => {
     state.image = img
+    // Reset any existing measurement state when a new image is loaded
+    state.lines = []
+    state.selected = null
+    state.basePx = 0
+    baseLine.value = null
+    tool.value = 'base'
+    clearLabels()
+    clearSelectionControls()
     resizeCanvas()
     draw()
   }
@@ -143,7 +151,8 @@ function getNormal(line) {
 function addLabel(line) {
   const label = document.createElement('div')
   label.className = line.type === 'base' ? 'ruler-cm-editor label' : 'target-cm-display label'
-  label.textContent = `${line.cm.toFixed(2)} cm`
+  const cm = Number.isFinite(line.cm) ? line.cm : 0
+  label.textContent = `${cm.toFixed(2)} cm`
   const mid = midpoint(line)
   const n = getNormal(line)
   const off = 20
@@ -327,7 +336,8 @@ function pointerUp() {
 function selectLine(hit) {
   state.selected = hit
   state.startLine = { ...hit.line }
-  updateSelectionControls()
+  // Redraw to ensure handles and control icons are visible for the selected line
+  draw()
 }
 
 let handleStart = null
