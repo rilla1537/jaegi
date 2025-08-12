@@ -85,7 +85,7 @@ const tool = ref('base')
 
 const state = reactive({
   drawing: null,
-  action: null,
+  action: 'idle',
   start: { x: 0, y: 0 },
   basePx: 0,
   lines: [],
@@ -107,6 +107,14 @@ function onFileChange(e) {
   const img = new Image()
   img.onload = () => {
     state.image = img
+    // Reset any existing measurement state when a new image is loaded
+    state.lines = []
+    state.selected = null
+    state.basePx = 0
+    baseLine.value = null
+    tool.value = 'base'
+    clearLabels()
+    clearSelectionControls()
     resizeCanvas()
     draw()
   }
@@ -143,12 +151,14 @@ function getNormal(line) {
 function addLabel(line) {
   const label = document.createElement('div')
   label.className = line.type === 'base' ? 'ruler-cm-editor label' : 'target-cm-display label'
-  label.textContent = `${line.cm.toFixed(2)} cm`
+  const cm = Number.isFinite(line.cm) ? line.cm : 0
+  label.textContent = `${cm.toFixed(2)} cm`
   const mid = midpoint(line)
   const n = getNormal(line)
   const off = 20
   label.style.left = `${mid.x + n.x * off}px`
   label.style.top = `${mid.y + n.y * off}px`
+  label.style.display = 'block'
   if (line.type === 'base') {
     label.addEventListener('click', () => {
       const val = parseFloat(prompt('Enter baseline length (cm)', line.cm))
@@ -247,39 +257,114 @@ function findLine(x, y) {
   return null
 }
 
-function pointerDown(evt) {
-  const pos = getPos(evt)
-  const hit = findLine(pos.x, pos.y)
-  if (hit) {
-    selectLine(hit)
-    return
-  }
-  if (tool.value === 'base' || tool.value === 'measure') {
-    if (tool.value === 'measure' && !baseLine.value) return
-    state.drawing = { x1: pos.x, y1: pos.y, x2: pos.x, y2: pos.y, type: tool.value }
-    state.action = 'drawing'
-  }
-}
-
-function pointerMove(evt) {
-  if (state.action === 'drawing') {
-    const pos = getPos(evt)
-    state.drawing.x2 = pos.x
-    state.drawing.y2 = pos.y
-    draw()
-    const ctx = mainCanvas.value.getContext('2d')
-    drawLine(ctx, state.drawing, state.drawing.type === 'base' ? 'deepskyblue' : 'tomato')
-  } else if (state.action && state.selected) {
-    const pos = getPos(evt)
-    const line = state.selected.line
-    if (state.action === 'move') {
+const pointerStrategies = {
+  idle: {
+    pointerdown(evt) {
+      const pos = getPos(evt)
+      const hit = findLine(pos.x, pos.y)
+      if (hit) {
+        selectLine(hit)
+        return
+      }
+      if (tool.value === 'measure' && !baseLine.value) return
+      if (tool.value === 'base' || tool.value === 'measure') {
+        state.drawing = { x1: pos.x, y1: pos.y, x2: pos.x, y2: pos.y, type: tool.value }
+        state.action = 'drawing'
+      }
+    },
+    pointermove() {},
+    pointerup() {},
+    pointercancel() {},
+  },
+  drawing: {
+    pointerdown() {},
+    pointermove(evt) {
+      const pos = getPos(evt)
+      state.drawing.x2 = pos.x
+      state.drawing.y2 = pos.y
+      draw()
+      const ctx = mainCanvas.value.getContext('2d')
+      drawLine(ctx, state.drawing, state.drawing.type === 'base' ? 'deepskyblue' : 'tomato')
+    },
+    pointerup() {
+      if (tool.value === 'base') {
+        baseLine.value = { ...state.drawing }
+        baseLine.value.cm =
+          parseFloat(prompt('Enter baseline length (cm)', '10')) || 10
+        baseLine.value.type = 'base'
+        state.basePx = distance(
+          baseLine.value.x1,
+          baseLine.value.y1,
+          baseLine.value.x2,
+          baseLine.value.y2,
+        )
+        state.lines = []
+        tool.value = 'measure'
+      } else {
+        const len = distance(
+          state.drawing.x1,
+          state.drawing.y1,
+          state.drawing.x2,
+          state.drawing.y2,
+        )
+        const cm = (baseLine.value.cm * len) / state.basePx
+        state.lines.push({ ...state.drawing, cm, type: 'measure' })
+      }
+      state.drawing = null
+      state.action = 'idle'
+      draw()
+    },
+    pointercancel() {
+      state.drawing = null
+      state.action = 'idle'
+      draw()
+    },
+  },
+  move: {
+    pointerdown() {},
+    pointermove(evt) {
+      if (!state.selected) return
+      const pos = getPos(evt)
+      const line = state.selected.line
       const dx = pos.x - state.start.x
       const dy = pos.y - state.start.y
       line.x1 = state.startLine.x1 + dx
       line.y1 = state.startLine.y1 + dy
       line.x2 = state.startLine.x2 + dx
       line.y2 = state.startLine.y2 + dy
-    } else if (state.action === 'rotate') {
+      if (line.type === 'base') {
+        state.basePx = distance(line.x1, line.y1, line.x2, line.y2)
+        recalcMeasures()
+      }
+      draw()
+    },
+    pointerup() {
+      state.action = 'idle'
+      draw()
+    },
+    pointercancel() {
+      if (state.selected) {
+        Object.assign(state.selected.line, state.startLine)
+        if (state.selected.line.type === 'base') {
+          state.basePx = distance(
+            state.selected.line.x1,
+            state.selected.line.y1,
+            state.selected.line.x2,
+            state.selected.line.y2,
+          )
+          recalcMeasures()
+        }
+        draw()
+      }
+      state.action = 'idle'
+    },
+  },
+  rotate: {
+    pointerdown() {},
+    pointermove(evt) {
+      if (!state.selected) return
+      const pos = getPos(evt)
+      const line = state.selected.line
       const center = midpoint(line)
       const angle = Math.atan2(pos.y - center.y, pos.x - center.x)
       const len = distance(line.x1, line.y1, line.x2, line.y2) / 2
@@ -287,47 +372,116 @@ function pointerMove(evt) {
       line.y1 = center.y - len * Math.sin(angle)
       line.x2 = center.x + len * Math.cos(angle)
       line.y2 = center.y + len * Math.sin(angle)
-    } else if (state.action === 'start') {
+      if (line.type === 'base') {
+        state.basePx = distance(line.x1, line.y1, line.x2, line.y2)
+        recalcMeasures()
+      }
+      draw()
+    },
+    pointerup() {
+      state.action = 'idle'
+      draw()
+    },
+    pointercancel() {
+      if (state.selected) {
+        Object.assign(state.selected.line, state.startLine)
+        if (state.selected.line.type === 'base') {
+          state.basePx = distance(
+            state.selected.line.x1,
+            state.selected.line.y1,
+            state.selected.line.x2,
+            state.selected.line.y2,
+          )
+          recalcMeasures()
+        }
+        draw()
+      }
+      state.action = 'idle'
+    },
+  },
+  start: {
+    pointerdown() {},
+    pointermove(evt) {
+      if (!state.selected) return
+      const pos = getPos(evt)
+      const line = state.selected.line
       line.x1 = pos.x
       line.y1 = pos.y
-    } else if (state.action === 'end') {
+      if (line.type === 'base') {
+        state.basePx = distance(line.x1, line.y1, line.x2, line.y2)
+        recalcMeasures()
+      }
+      draw()
+    },
+    pointerup() {
+      state.action = 'idle'
+      draw()
+    },
+    pointercancel() {
+      if (state.selected) {
+        Object.assign(state.selected.line, state.startLine)
+        if (state.selected.line.type === 'base') {
+          state.basePx = distance(
+            state.selected.line.x1,
+            state.selected.line.y1,
+            state.selected.line.x2,
+            state.selected.line.y2,
+          )
+          recalcMeasures()
+        }
+        draw()
+      }
+      state.action = 'idle'
+    },
+  },
+  end: {
+    pointerdown() {},
+    pointermove(evt) {
+      if (!state.selected) return
+      const pos = getPos(evt)
+      const line = state.selected.line
       line.x2 = pos.x
       line.y2 = pos.y
-    }
-    if (line.type === 'base') {
-      state.basePx = distance(line.x1, line.y1, line.x2, line.y2)
-      recalcMeasures()
-    }
-    draw()
-  }
+      if (line.type === 'base') {
+        state.basePx = distance(line.x1, line.y1, line.x2, line.y2)
+        recalcMeasures()
+      }
+      draw()
+    },
+    pointerup() {
+      state.action = 'idle'
+      draw()
+    },
+    pointercancel() {
+      if (state.selected) {
+        Object.assign(state.selected.line, state.startLine)
+        if (state.selected.line.type === 'base') {
+          state.basePx = distance(
+            state.selected.line.x1,
+            state.selected.line.y1,
+            state.selected.line.x2,
+            state.selected.line.y2,
+          )
+          recalcMeasures()
+        }
+        draw()
+      }
+      state.action = 'idle'
+    },
+  },
 }
 
-function pointerUp() {
-  if (state.action === 'drawing') {
-    if (tool.value === 'base') {
-      baseLine.value = { ...state.drawing }
-      baseLine.value.cm = parseFloat(prompt('Enter baseline length (cm)', '10')) || 10
-      baseLine.value.type = 'base'
-      state.basePx = distance(baseLine.value.x1, baseLine.value.y1, baseLine.value.x2, baseLine.value.y2)
-      state.lines = []
-      tool.value = 'measure'
-    } else {
-      const len = distance(state.drawing.x1, state.drawing.y1, state.drawing.x2, state.drawing.y2)
-      const cm = (baseLine.value.cm * len) / state.basePx
-      state.lines.push({ ...state.drawing, cm, type: 'measure' })
-    }
-    state.drawing = null
-    state.action = null
-    draw()
-  } else if (state.action) {
-    state.action = null
-  }
+function handlePointer(type, evt) {
+  const strat = pointerStrategies[state.action]
+  if (strat && strat[type]) strat[type](evt)
 }
 
 function selectLine(hit) {
   state.selected = hit
   state.startLine = { ...hit.line }
-  updateSelectionControls()
+  state.action = 'idle'
+  // Redraw to ensure handles and control icons are visible for the selected line
+  draw()
 }
 
 let handleStart = null
@@ -393,16 +547,16 @@ function startManip(e, type) {
   e.stopPropagation()
   state.action = type
   state.start = getPos(e)
-  if (type === 'move') {
-    state.startLine = { ...state.selected.line }
-  }
-  window.addEventListener('pointerup', pointerUp)
+  state.startLine = { ...state.selected.line }
 }
 
 onMounted(() => {
-  mainCanvas.value.addEventListener('pointerdown', pointerDown)
-  mainCanvas.value.addEventListener('pointermove', pointerMove)
-  window.addEventListener('pointerup', pointerUp)
+  const canvas = mainCanvas.value
+  canvas.addEventListener('pointerdown', (e) => handlePointer('pointerdown', e))
+  canvas.addEventListener('pointermove', (e) => handlePointer('pointermove', e))
+  canvas.addEventListener('pointercancel', (e) => handlePointer('pointercancel', e))
+  window.addEventListener('pointerup', (e) => handlePointer('pointerup', e))
+  window.addEventListener('pointercancel', (e) => handlePointer('pointercancel', e))
   resizeCanvas()
   draw()
 })
